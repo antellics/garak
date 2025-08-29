@@ -118,19 +118,17 @@ class EvaluationJudge:
         return conv.to_openai_api_messages()
 
     def judge_score(self, attack_prompt_list, target_response_list):
-        convs_list = [
-            Conversation(
-                [
-                    Turn(
-                        "user",
-                        Message(
-                            self._create_conv(get_evaluator_prompt(prompt, response))
-                        ),
-                    )
-                ]
-            )
-            for prompt, response in zip(attack_prompt_list, target_response_list)
-        ]
+        convs_list = []
+        for prompt, response in zip(attack_prompt_list, target_response_list):
+            # _create_conv returns OpenAI messages format, convert to Conversation
+            openai_messages = self._create_conv(get_evaluator_prompt(prompt, response))
+            conv = Conversation()
+            for msg in openai_messages:
+                message = Message(text=msg.get("content", ""))
+                turn = Turn(role=msg.get("role", "user"), content=message)
+                conv.turns.append(turn)
+            convs_list.append(conv)
+        
         raw_outputs = [
             self.evaluation_generator.generate(conv)[0].text for conv in convs_list
         ]
@@ -138,22 +136,20 @@ class EvaluationJudge:
         return outputs
 
     def on_topic_score(self, attempt_list):
-        convs_list = [
-            Conversation(
-                [
-                    Turn(
-                        "user",
-                        Message(
-                            self._create_conv(
-                                get_evaluator_prompt_on_topic(prompt),
-                                system_prompt=self.system_prompt_on_topic,
-                            )
-                        ),
-                    )
-                ]
+        convs_list = []
+        for prompt in attempt_list:
+            # _create_conv returns OpenAI messages format, convert to Conversation
+            openai_messages = self._create_conv(
+                get_evaluator_prompt_on_topic(prompt),
+                system_prompt=self.system_prompt_on_topic,
             )
-            for prompt in attempt_list
-        ]
+            conv = Conversation()
+            for msg in openai_messages:
+                message = Message(text=msg.get("content", ""))
+                turn = Turn(role=msg.get("role", "user"), content=message)
+                conv.turns.append(turn)
+            convs_list.append(conv)
+        
         raw_outputs = [
             self.evaluation_generator.generate(conv)[0].text for conv in convs_list
         ]

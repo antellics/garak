@@ -130,15 +130,58 @@ class AttackManager(EvaluationJudge):
                 for full_prompt in full_prompts_subset[left:right]:
                     # We should fail more gracefully within runs for garak.
                     try:
-                        outputs_list.append(
-                            self.attack_generator.generate(full_prompt)[0]
-                        )
+                        # Debug: Log the type and content of full_prompt
+                        import logging
+                        logging.debug(f"TAP DEBUG - full_prompt type: {type(full_prompt)}")
+                        logging.debug(f"TAP DEBUG - full_prompt content: {full_prompt[:200] if isinstance(full_prompt, str) else full_prompt}")
+                        
+                        # Convert to Conversation object if needed
+                        from garak.attempt import Conversation, Turn, Message
+                        
+                        if isinstance(full_prompt, list):  # OpenAI format
+                            conv = Conversation()
+                            for msg in full_prompt:
+                                message = Message(text=msg.get("content", ""))
+                                turn = Turn(role=msg.get("role", "user"), content=message)
+                                conv.turns.append(turn)
+                            prompt_to_use = conv
+                        elif isinstance(full_prompt, str):  # String format
+                            conv = Conversation()
+                            message = Message(text=full_prompt)
+                            turn = Turn(role="user", content=message)
+                            conv.turns.append(turn)
+                            prompt_to_use = conv
+                        else:
+                            prompt_to_use = full_prompt
+                        
+                        logging.debug(f"TAP DEBUG - converted prompt type: {type(prompt_to_use)}")
+                            
+                        result = self.attack_generator.generate(prompt_to_use)[0]
+                        logging.debug(f"TAP DEBUG - generate result type: {type(result)}")
+                        logging.debug(f"TAP DEBUG - generate result: {result}")
+                        
+                        # Extract text from Message object if needed
+                        if result is None:
+                            logging.debug("TAP DEBUG - result is None, appending empty string")
+                            outputs_list.append("")
+                        elif hasattr(result, 'text'):
+                            logging.debug(f"TAP DEBUG - result has text attribute: {result.text}")
+                            outputs_list.append(result.text)
+                        else:
+                            logging.debug(f"TAP DEBUG - using result directly: {result}")
+                            outputs_list.append(result)
                     except torch.cuda.OutOfMemoryError as e:
                         if len(outputs_list) > 0:
                             break
                         else:
                             logger.critical("CUDA OOM during TAP generation")
                             raise e
+                    except Exception as ex:
+                        logging.error(f"TAP DEBUG - Error in get_attack: {ex}")
+                        logging.error(f"TAP DEBUG - Error type: {type(ex)}")
+                        import traceback
+                        logging.error(f"TAP DEBUG - Traceback: {traceback.format_exc()}")
+                        raise ex
 
             # Check for valid outputs and update the list
             new_indices_to_regenerate = []
@@ -203,7 +246,33 @@ class AttackManager(EvaluationJudge):
                 continue
 
             for full_prompt in full_prompts[left:right]:
-                outputs_list.append(self.target_generator.generate(full_prompt)[0])
+                # Convert to Conversation object if needed
+                from garak.attempt import Conversation, Turn, Message
+                
+                if isinstance(full_prompt, list):  # OpenAI format
+                    conv = Conversation()
+                    for msg in full_prompt:
+                        message = Message(text=msg.get("content", ""))
+                        turn = Turn(role=msg.get("role", "user"), content=message)
+                        conv.turns.append(turn)
+                    prompt_to_use = conv
+                elif isinstance(full_prompt, str):  # String format
+                    conv = Conversation()
+                    message = Message(text=full_prompt)
+                    turn = Turn(role="user", content=message)
+                    conv.turns.append(turn)
+                    prompt_to_use = conv
+                else:
+                    prompt_to_use = full_prompt
+                    
+                result = self.target_generator.generate(prompt_to_use)[0]
+                # Extract text from Message object if needed
+                if result is None:
+                    outputs_list.append("")
+                elif hasattr(result, 'text'):
+                    outputs_list.append(result.text)
+                else:
+                    outputs_list.append(result)
         return outputs_list
 
 
