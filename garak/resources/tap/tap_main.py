@@ -6,6 +6,8 @@ import torch.cuda
 from pathlib import Path
 from tqdm import tqdm
 from logging import getLogger
+import json
+import datetime
 
 import garak.generators.openai
 
@@ -74,6 +76,33 @@ class AttackManager(EvaluationJudge):
         self.evaluator_token_limit = get_token_limit(evaluation_generator.name)
         self.system_prompt_judge = judge_system_prompt(goal)
         self.system_prompt_on_topic = on_topic_prompt(goal)
+        
+        # Initialize detailed interaction logger
+        self.interaction_log_file = None
+        self._setup_interaction_logger()
+
+    def _setup_interaction_logger(self):
+        """Setup the detailed interaction logger with timestamped filename"""
+        import os
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_dir = garak._config.transient.cache_dir / "tap_interactions"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        self.interaction_log_file = log_dir / f"tap_interactions_{timestamp}.jsonl"
+        
+        # Write initial header to log file
+        initial_entry = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "event_type": "session_start",
+            "attack_generator": str(self.attack_generator.__class__.__name__),
+            "target_generator": str(self.target_generator.__class__.__name__),
+            "evaluation_generator": str(self.evaluation_generator.__class__.__name__)
+        }
+        self._write_interaction_log(initial_entry)
+
+    def _write_interaction_log(self, entry):
+        """Write an entry to the interaction log file"""
+        with open(self.interaction_log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
 
     def get_attack(self, convs, prompts):
         """
@@ -245,7 +274,7 @@ class AttackManager(EvaluationJudge):
             if right == left:
                 continue
 
-            for full_prompt in full_prompts[left:right]:
+            for idx, full_prompt in enumerate(full_prompts[left:right]):
                 # Convert to Conversation object if needed
                 from garak.attempt import Conversation, Turn, Message
                 
@@ -264,16 +293,67 @@ class AttackManager(EvaluationJudge):
                     prompt_to_use = conv
                 else:
                     prompt_to_use = full_prompt
+                
+                # Log the target interaction
+                prompt_idx = left + idx
+                target_prompt = prompts[prompt_idx] if prompt_idx < len(prompts) else "unknown"
                     
                 result = self.target_generator.generate(prompt_to_use)[0]
                 # Extract text from Message object if needed
                 if result is None:
-                    outputs_list.append("")
+                    target_response = ""
                 elif hasattr(result, 'text'):
-                    outputs_list.append(result.text)
+                    target_response = result.text
                 else:
-                    outputs_list.append(result)
+                    target_response = result
+                
+                # Log the target interaction
+                target_entry = {
+                    "timestamp": datetime.datetime.now().isoformat(),
+                    "event_type": "target_interaction",
+                    "prompt_index": prompt_idx,
+                    "adversarial_prompt": target_prompt,
+                    "target_response": target_response
+                }
+                self._write_interaction_log(target_entry)
+                
+                outputs_list.append(target_response)
         return outputs_list
+
+    def judge_score(self, attack_prompt_list, target_response_list):
+        """Override EvaluationJudge.judge_score to add logging"""
+        scores = super().judge_score(attack_prompt_list, target_response_list)
+        
+        # Log the evaluation results
+        for i, (prompt, response, score) in enumerate(zip(attack_prompt_list, target_response_list, scores)):
+            eval_entry = {
+                "timestamp": datetime.datetime.now().isoformat(),
+                "event_type": "judge_evaluation",
+                "prompt_index": i,
+                "adversarial_prompt": prompt,
+                "target_response": response,
+                "judge_score": score
+            }
+            self._write_interaction_log(eval_entry)
+        
+        return scores
+
+    def on_topic_score(self, attempt_list):
+        """Override EvaluationJudge.on_topic_score to add logging"""
+        scores = super().on_topic_score(attempt_list)
+        
+        # Log the on-topic evaluation results
+        for i, (prompt, score) in enumerate(zip(attempt_list, scores)):
+            eval_entry = {
+                "timestamp": datetime.datetime.now().isoformat(),
+                "event_type": "on_topic_evaluation",
+                "prompt_index": i,
+                "adversarial_prompt": prompt,
+                "on_topic_score": score
+            }
+            self._write_interaction_log(eval_entry)
+        
+        return scores
 
 
 def run_tap(

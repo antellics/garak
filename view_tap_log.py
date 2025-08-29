@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+import json
+import sys
+from pathlib import Path
+
+
+def generate_html_template():
+    """Generate HTML template with file picker and JavaScript viewer"""
+    return """
+ <!DOCTYPE html>
+ <html>
+ <head>
+     <title>TAP Interaction Analyzer</title>
+     <style>
+         body { font-family: Arial, sans-serif; margin: 20px; max-width: 1200px; }
+         .file-picker { background: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
+         .event { border: 1px solid #ccc; margin: 10px 0; padding: 15px; border-radius: 8px; }
+         .target_interaction { background-color: #e8f4f8; border-left: 4px solid #0066cc; }
+         .judge_evaluation { background-color: #fff2e8; border-left: 4px solid #ff6600; }
+         .on_topic_evaluation { background-color: #f0f8e8; border-left: 4px solid #009900; }
+         .session_start { background-color: #f8e8f8; border-left: 4px solid #9900cc; }
+         .timestamp { font-size: 0.85em; color: #666; margin-bottom: 10px; }
+         .score { font-weight: bold; padding: 2px 6px; border-radius: 3px; }
+         .high-score { background-color: #dc3545; color: white; }
+         .med-score { background-color: #ffc107; color: black; }
+         .low-score { background-color: #28a745; color: white; }
+         pre { background: #f8f9fa; padding: 12px; border-radius: 4px; white-space: pre-wrap; font-size: 0.9em; max-height: 300px; overflow-y: auto; }
+         .summary { background: #e9ecef; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: none; }
+         .summary.show { display: block; }
+         .filter-controls { background: #fff; padding: 15px; border: 1px solid #dee2e6; border-radius: 8px; margin-bottom: 20px; display: none; }
+         .filter-controls.show { display: block; }
+         .filter-btn { margin: 5px; padding: 5px 15px; border: 1px solid #ccc; background: #fff; border-radius: 4px; cursor: pointer; }
+         .filter-btn.active { background: #007bff; color: white; }
+         .hidden { display: none; }
+         input[type="file"] { padding: 10px; border: 2px dashed #ccc; border-radius: 8px; width: 100%; }
+         .stats { display: inline-block; margin-right: 20px; }
+     </style>
+ </head>
+ <body>
+     <h1>TAP Interaction Analyzer</h1>
+
+     <div class="file-picker">
+         <h3>Load TAP Interaction Log</h3>
+         <input type="file" id="fileInput" accept=".jsonl" />
+         <p><small>Select a TAP interaction JSONL file to analyze</small></p>
+     </div>
+
+     <div id="summary" class="summary"></div>
+
+     <div id="filterControls" class="filter-controls">
+         <h4>Filter Events:</h4>
+         <button class="filter-btn active" onclick="filterEvents('all')">All Events</button>
+         <button class="filter-btn" onclick="filterEvents('target_interaction')">Target Interactions</button>
+         <button class="filter-btn" onclick="filterEvents('judge_evaluation')">Judge Evaluations</button>
+         <button class="filter-btn" onclick="filterEvents('on_topic_evaluation')">On-Topic Evaluations</button>
+         <button class="filter-btn" onclick="filterEvents('session_start')">Session Info</button>
+     </div>
+
+     <div id="content"></div>
+
+     <script>
+         let allEvents = [];
+         let currentFilter = 'all';
+
+         document.getElementById('fileInput').addEventListener('change', function(e) {
+             const file = e.target.files[0];
+             if (!file) return;
+
+             const reader = new FileReader();
+             reader.onload = function(e) {
+                 const lines = e.target.result.split('\\n').filter(line => line.trim());
+                 allEvents = lines.map(line => JSON.parse(line));
+                 displaySummary(allEvents);
+                 displayEvents(allEvents);
+                 document.getElementById('summary').classList.add('show');
+                 document.getElementById('filterControls').classList.add('show');
+             };
+             reader.readAsText(file);
+         });
+
+         function displaySummary(events) {
+             const targetInteractions = events.filter(e => e.event_type === 'target_interaction');
+             const judgeEvals = events.filter(e => e.event_type === 'judge_evaluation');
+             const onTopicEvals = events.filter(e => e.event_type === 'on_topic_evaluation');
+
+             let summaryHtml = '<h3>Summary</h3>';
+             summaryHtml += `<div class="stats"><strong>Total Events:</strong> ${events.length}</div>`;
+             summaryHtml += `<div class="stats"><strong>Target Interactions:</strong> ${targetInteractions.length}</div>`;
+             summaryHtml += `<div class="stats"><strong>Judge Evaluations:</strong> ${judgeEvals.length}</div>`;
+             summaryHtml += `<div class="stats"><strong>On-Topic Evaluations:</strong> ${onTopicEvals.length}</div>`;
+
+             if (judgeEvals.length > 0) {
+                 const scores = judgeEvals.map(e => e.judge_score);
+                 const avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
+                 const maxScore = Math.max(...scores);
+                 const highScores = scores.filter(s => s >= 7).length;
+
+                 summaryHtml += '<br>';
+                 summaryHtml += `<div class="stats"><strong>Avg Judge Score:</strong> ${avgScore.toFixed(1)}/10</div>`;
+                 summaryHtml += `<div class="stats"><strong>Max Judge Score:</strong> ${maxScore}/10</div>`;
+                 summaryHtml += `<div class="stats"><strong>High Scores (≥7):</strong> ${highScores}</div>`;
+             }
+
+             document.getElementById('summary').innerHTML = summaryHtml;
+         }
+
+         function displayEvents(events) {
+             const content = document.getElementById('content');
+             content.innerHTML = '';
+
+             const filteredEvents = currentFilter === 'all' ? events : events.filter(e => e.event_type === currentFilter);
+
+             filteredEvents.forEach((event, index) => {
+                 const div = document.createElement('div');
+                 div.className = `event ${event.event_type}`;
+
+                 let html = `<div class="timestamp">${event.timestamp} - ${event.event_type}</div>`;
+
+                 if (event.event_type === 'target_interaction') {
+                     html += `
+                         <strong>Prompt #${event.prompt_index}:</strong>
+                         <pre>${escapeHtml(event.adversarial_prompt)}</pre>
+                         <strong>Target Response:</strong>
+                         <pre>${escapeHtml(event.target_response)}</pre>
+                     `;
+                 } else if (event.event_type === 'judge_evaluation') {
+                     const scoreClass = event.judge_score >= 7 ? 'high-score' : event.judge_score >= 4 ? 'med-score' : 'low-score';
+                     html += `
+                         <strong>Prompt #${event.prompt_index}:</strong>
+                         <pre>${escapeHtml(event.adversarial_prompt)}</pre>
+                         <strong>Target Response:</strong>
+                         <pre>${escapeHtml(event.target_response)}</pre>
+                         <strong>Judge Score:</strong> <span class="score ${scoreClass}">${event.judge_score}/10</span>
+                     `;
+                 } else if (event.event_type === 'on_topic_evaluation') {
+                     html += `
+                         <strong>Prompt #${event.prompt_index}:</strong>
+                         <pre>${escapeHtml(event.adversarial_prompt)}</pre>
+                         <strong>On-Topic Score:</strong> <span class="score">${event.on_topic_score}</span>
+                     `;
+                 } else if (event.event_type === 'session_start') {
+                     html += `
+                         <strong>Attack Generator:</strong> ${event.attack_generator}<br>
+                         <strong>Target Generator:</strong> ${event.target_generator}<br>
+                         <strong>Evaluation Generator:</strong> ${event.evaluation_generator}
+                     `;
+                 }
+
+                 div.innerHTML = html;
+                 content.appendChild(div);
+             });
+
+             if (filteredEvents.length === 0) {
+                 content.innerHTML = '<p>No events match the current filter.</p>';
+             }
+         }
+
+         function filterEvents(filterType) {
+             currentFilter = filterType;
+
+             // Update button states
+             document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
+             event.target.classList.add('active');
+
+             displayEvents(allEvents);
+         }
+
+         function escapeHtml(text) {
+             const div = document.createElement('div');
+             div.textContent = text;
+             return div.innerHTML;
+         }
+     </script>
+ </body>
+ </html>
+ """
+
+
+def jsonl_to_html(jsonl_file=None, output_file="tap_analyzer.html"):
+    """Generate HTML file with embedded viewer and optional pre-loaded data"""
+
+    html_content = generate_html_template()
+
+    # If a JSONL file is provided, we can pre-embed the data (optional)
+    if jsonl_file and Path(jsonl_file).exists():
+        events = []
+        with open(jsonl_file, 'r') as f:
+            for line in f:
+                if line.strip():
+                    events.append(json.loads(line))
+
+        # Add JavaScript to auto-load the data
+        preload_script = f"""
+         <script>
+         window.addEventListener('load', function() {{
+             const events = {json.dumps(events)};
+             allEvents = events;
+             displaySummary(events);
+             displayEvents(events);
+             document.getElementById('summary').classList.add('show');
+             document.getElementById('filterControls').classList.add('show');
+         }});
+         </script>
+         """
+        html_content = html_content.replace('</body>', preload_script + '</body>')
+
+    with open(output_file, 'w') as f:
+        f.write(html_content)
+
+    print(f"TAP Analyzer generated: {output_file}")
+    print(f"Open {output_file} in your browser to analyze TAP interaction logs")
+    return output_file
+
+
+if __name__ == "__main__":
+    if len(sys.argv) == 2:
+        # Pre-load with specific JSONL file
+        jsonl_file = Path(sys.argv[1])
+        if not jsonl_file.exists():
+            print(f"File not found: {jsonl_file}")
+            sys.exit(1)
+        jsonl_to_html(jsonl_file, f"tap_analysis_{jsonl_file.stem}.html")
+    else:
+        # Generate standalone analyzer
+        jsonl_to_html()
+        print("\nUsage:")
+        print("  python view_tap_log.py                    # Generate standalone analyzer")
+        print("  python view_tap_log.py <jsonl_file>       # Generate analyzer with pre-loaded data")
