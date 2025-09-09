@@ -1,0 +1,14 @@
+{
+   "rest": {
+      "RestGenerator": {
+         "name": "ms read teaming playground",
+         "uri": "http://localhost:4001/chats/3b507c4f-8354-40d9-9af7-fd95d1263aa3/messages",
+         "method": "post",
+         "headers": {"Cookie":"session=eyJ1c2VyX2lkIjoiNWRlM2ZmNWYtNmU5OS00YjhmLWExZTMtYjAzYTkwZjA4NzIxIiwiZXhwIjoxNzU3NDU0NjA0fQ.eQdfc-exEgo8hCExfT7zGz9U-gE",
+         "content-type": "application/json"},
+         "req_template_json_object": {"input":"$INPUT","variables":[{"key":"chatId","value":"3b507c4f-8354-40d9-9af7-fd95d1263aa3"},{"key":"messageType","value":"0"}]},
+         "response_json": true,
+         "response_json_field": "value"
+      }
+   }
+}

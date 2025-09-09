@@ -6,8 +6,6 @@ import torch.cuda
 from pathlib import Path
 from tqdm import tqdm
 from logging import getLogger
-import json
-import datetime
 
 import garak.generators.openai
 
@@ -76,33 +74,6 @@ class AttackManager(EvaluationJudge):
         self.evaluator_token_limit = get_token_limit(evaluation_generator.name)
         self.system_prompt_judge = judge_system_prompt(goal)
         self.system_prompt_on_topic = on_topic_prompt(goal)
-        
-        # Initialize detailed interaction logger
-        self.interaction_log_file = None
-        self._setup_interaction_logger()
-
-    def _setup_interaction_logger(self):
-        """Setup the detailed interaction logger with timestamped filename"""
-        import os
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_dir = garak._config.transient.cache_dir / "tap_interactions"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        self.interaction_log_file = log_dir / f"tap_interactions_{timestamp}.jsonl"
-        
-        # Write initial header to log file
-        initial_entry = {
-            "timestamp": datetime.datetime.now().isoformat(),
-            "event_type": "session_start",
-            "attack_generator": str(self.attack_generator.__class__.__name__),
-            "target_generator": str(self.target_generator.__class__.__name__),
-            "evaluation_generator": str(self.evaluation_generator.__class__.__name__)
-        }
-        self._write_interaction_log(initial_entry)
-
-    def _write_interaction_log(self, entry):
-        """Write an entry to the interaction log file"""
-        with open(self.interaction_log_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
 
     def get_attack(self, convs, prompts):
         """
@@ -156,61 +127,33 @@ class AttackManager(EvaluationJudge):
                 if right == left:
                     continue
 
+                # Generate attack outputs; adapt call if using garak Generator which expects a Conversation
+                try:
+                    from garak.generators.base import Generator as GarakGenerator
+                except Exception:
+                    GarakGenerator = None
+
                 for full_prompt in full_prompts_subset[left:right]:
                     # We should fail more gracefully within runs for garak.
                     try:
-                        # Debug: Log the type and content of full_prompt
-                        import logging
-                        logging.debug(f"TAP DEBUG - full_prompt type: {type(full_prompt)}")
-                        logging.debug(f"TAP DEBUG - full_prompt content: {full_prompt[:200] if isinstance(full_prompt, str) else full_prompt}")
-                        
-                        # Convert to Conversation object if needed
-                        from garak.attempt import Conversation, Turn, Message
-                        
-                        if isinstance(full_prompt, list):  # OpenAI format
-                            conv = Conversation()
-                            for msg in full_prompt:
-                                message = Message(text=msg.get("content", ""))
-                                turn = Turn(role=msg.get("role", "user"), content=message)
-                                conv.turns.append(turn)
-                            prompt_to_use = conv
-                        elif isinstance(full_prompt, str):  # String format
-                            conv = Conversation()
-                            message = Message(text=full_prompt)
-                            turn = Turn(role="user", content=message)
-                            conv.turns.append(turn)
-                            prompt_to_use = conv
+                        if GarakGenerator is not None and isinstance(self.attack_generator, GarakGenerator):
+                            from garak.attempt import Conversation, Turn, Message
+                            # Wrap the prompt text into a garak Conversation
+                            prompt_text = full_prompt if isinstance(full_prompt, str) else str(full_prompt)
+                            result = self.attack_generator.generate(
+                                Conversation([Turn("user", Message(text=prompt_text))])
+                            )[0]
+                            outputs_list.append(getattr(result, "text", result))
                         else:
-                            prompt_to_use = full_prompt
-                        
-                        logging.debug(f"TAP DEBUG - converted prompt type: {type(prompt_to_use)}")
-                            
-                        result = self.attack_generator.generate(prompt_to_use)[0]
-                        logging.debug(f"TAP DEBUG - generate result type: {type(result)}")
-                        logging.debug(f"TAP DEBUG - generate result: {result}")
-                        
-                        # Extract text from Message object if needed
-                        if result is None:
-                            logging.debug("TAP DEBUG - result is None, appending empty string")
-                            outputs_list.append("")
-                        elif hasattr(result, 'text'):
-                            logging.debug(f"TAP DEBUG - result has text attribute: {result.text}")
-                            outputs_list.append(result.text)
-                        else:
-                            logging.debug(f"TAP DEBUG - using result directly: {result}")
-                            outputs_list.append(result)
+                            outputs_list.append(
+                                self.attack_generator.generate(full_prompt)[0]
+                            )
                     except torch.cuda.OutOfMemoryError as e:
                         if len(outputs_list) > 0:
                             break
                         else:
                             logger.critical("CUDA OOM during TAP generation")
                             raise e
-                    except Exception as ex:
-                        logging.error(f"TAP DEBUG - Error in get_attack: {ex}")
-                        logging.error(f"TAP DEBUG - Error type: {type(ex)}")
-                        import traceback
-                        logging.error(f"TAP DEBUG - Traceback: {traceback.format_exc()}")
-                        raise ex
 
             # Check for valid outputs and update the list
             new_indices_to_regenerate = []
@@ -274,86 +217,24 @@ class AttackManager(EvaluationJudge):
             if right == left:
                 continue
 
+            # Generate target responses; adapt call if using garak Generator which expects a Conversation
+            try:
+                from garak.generators.base import Generator as GarakGenerator
+            except Exception:
+                GarakGenerator = None
+
             for idx, full_prompt in enumerate(full_prompts[left:right]):
-                # Convert to Conversation object if needed
-                from garak.attempt import Conversation, Turn, Message
-                
-                if isinstance(full_prompt, list):  # OpenAI format
-                    conv = Conversation()
-                    for msg in full_prompt:
-                        message = Message(text=msg.get("content", ""))
-                        turn = Turn(role=msg.get("role", "user"), content=message)
-                        conv.turns.append(turn)
-                    prompt_to_use = conv
-                elif isinstance(full_prompt, str):  # String format
-                    conv = Conversation()
-                    message = Message(text=full_prompt)
-                    turn = Turn(role="user", content=message)
-                    conv.turns.append(turn)
-                    prompt_to_use = conv
+                if GarakGenerator is not None and isinstance(self.target_generator, GarakGenerator):
+                    from garak.attempt import Conversation, Turn, Message
+
+                    # Use the raw adversarial prompt text for garak generators
+                    prompt_text = prompts[left + idx]
+                    conv = Conversation([Turn("user", Message(text=prompt_text))])
+                    result = self.target_generator.generate(conv)[0]
+                    outputs_list.append(getattr(result, "text", result))
                 else:
-                    prompt_to_use = full_prompt
-                
-                # Log the target interaction
-                prompt_idx = left + idx
-                target_prompt = prompts[prompt_idx] if prompt_idx < len(prompts) else "unknown"
-                    
-                result = self.target_generator.generate(prompt_to_use)[0]
-                # Extract text from Message object if needed
-                if result is None:
-                    target_response = ""
-                elif hasattr(result, 'text'):
-                    target_response = result.text
-                else:
-                    target_response = result
-                
-                # Log the target interaction
-                target_entry = {
-                    "timestamp": datetime.datetime.now().isoformat(),
-                    "event_type": "target_interaction",
-                    "prompt_index": prompt_idx,
-                    "adversarial_prompt": target_prompt,
-                    "target_response": target_response
-                }
-                self._write_interaction_log(target_entry)
-                
-                outputs_list.append(target_response)
+                    outputs_list.append(self.target_generator.generate(full_prompt)[0])
         return outputs_list
-
-    def judge_score(self, attack_prompt_list, target_response_list):
-        """Override EvaluationJudge.judge_score to add logging"""
-        scores = super().judge_score(attack_prompt_list, target_response_list)
-        
-        # Log the evaluation results
-        for i, (prompt, response, score) in enumerate(zip(attack_prompt_list, target_response_list, scores)):
-            eval_entry = {
-                "timestamp": datetime.datetime.now().isoformat(),
-                "event_type": "judge_evaluation",
-                "prompt_index": i,
-                "adversarial_prompt": prompt,
-                "target_response": response,
-                "judge_score": score
-            }
-            self._write_interaction_log(eval_entry)
-        
-        return scores
-
-    def on_topic_score(self, attempt_list):
-        """Override EvaluationJudge.on_topic_score to add logging"""
-        scores = super().on_topic_score(attempt_list)
-        
-        # Log the on-topic evaluation results
-        for i, (prompt, score) in enumerate(zip(attempt_list, scores)):
-            eval_entry = {
-                "timestamp": datetime.datetime.now().isoformat(),
-                "event_type": "on_topic_evaluation",
-                "prompt_index": i,
-                "adversarial_prompt": prompt,
-                "on_topic_score": score
-            }
-            self._write_interaction_log(eval_entry)
-        
-        return scores
 
 
 def run_tap(
